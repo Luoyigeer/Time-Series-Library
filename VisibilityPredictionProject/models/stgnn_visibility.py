@@ -90,7 +90,7 @@ class SpatialGraphConv(nn.Module):
         """
         Args:
             x: Node features [batch_size, num_nodes, in_features]
-            edge_index: Edge connectivity [2, num_edges]
+            edge_index: Edge connectivity [2, num_edges] or adjacency matrix [num_nodes, num_nodes]
         Returns:
             Updated node features [batch_size, num_nodes, out_features]
         """
@@ -99,12 +99,21 @@ class SpatialGraphConv(nn.Module):
         # Transform features
         x_transformed = self.linear(x)
         
-        # Aggregate neighbor information with learnable edge weights
+        # If edge_index is an adjacency matrix, convert to edge list
+        if len(edge_index.shape) == 2 and edge_index.shape[0] == edge_index.shape[1]:
+            # It's an adjacency matrix - use it directly
+            # Aggregate using matrix multiplication
+            # edge_index: [num_nodes, num_nodes]
+            # x_transformed: [batch_size, num_nodes, out_features]
+            aggregated = torch.matmul(edge_index.unsqueeze(0), x_transformed)
+            return aggregated
+        
+        # Otherwise, use edge list format
         aggregated = torch.zeros(batch_size, num_nodes, x_transformed.shape[-1], 
                                 device=x.device)
         
         for i in range(edge_index.shape[1]):
-            src, dst = edge_index[:, i]
+            src, dst = edge_index[0, i], edge_index[1, i]
             # Compute edge weight based on node features
             edge_feat = torch.cat([x[:, src, :], x[:, dst, :]], dim=-1)
             edge_weight = self.edge_weight_net(edge_feat)
@@ -199,15 +208,16 @@ class STGNNVisibility(nn.Module):
             for j in range(num_nodes):
                 if i != j:
                     edge_index.append([i, j])
-        return torch.tensor(edge_index, dtype=torch.long).t()
+        # Return as long tensor
+        return torch.tensor(edge_index, dtype=torch.long).t().contiguous()
         
-    def forward(self, x, edge_index=None):
+    def forward(self, x, adj_matrix=None):
         """
         Forward pass for spatio-temporal visibility prediction.
         
         Args:
             x: Input features [batch_size, seq_len, num_stations, input_dim]
-            edge_index: Optional edge connectivity [2, num_edges]
+            adj_matrix: Adjacency matrix [batch_size, num_stations, num_stations] or [num_stations, num_stations]
                        If None, uses default fully connected graph
             
         Returns:
@@ -215,9 +225,15 @@ class STGNNVisibility(nn.Module):
         """
         batch_size, seq_len, num_stations, _ = x.shape
         
-        # Use provided or default edge index
-        if edge_index is None:
-            edge_index = self.edge_index
+        # Handle adjacency matrix
+        if adj_matrix is None:
+            # Create default adjacency (fully connected)
+            adj_matrix = torch.ones(num_stations, num_stations, device=x.device)
+            adj_matrix.fill_diagonal_(0)
+            adj_matrix = adj_matrix / (adj_matrix.sum(dim=1, keepdim=True) + 1e-6)
+        elif len(adj_matrix.shape) == 3:
+            # Batch of adjacency matrices - use first one
+            adj_matrix = adj_matrix[0]
         
         # Embed input features
         x = x.reshape(batch_size * seq_len, num_stations, self.input_dim)
@@ -226,7 +242,7 @@ class STGNNVisibility(nn.Module):
         # Spatial processing
         spatial_features = x
         for spatial_layer, spatial_norm in zip(self.spatial_layers, self.spatial_norms):
-            spatial_out = spatial_layer(spatial_features, edge_index)
+            spatial_out = spatial_layer(spatial_features, adj_matrix)
             spatial_features = spatial_norm(spatial_out + spatial_features)
         
         # Reshape for temporal processing

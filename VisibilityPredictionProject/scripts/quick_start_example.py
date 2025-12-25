@@ -97,7 +97,7 @@ def example_3_training():
         './data/noaa_visibility',
         batch_size=8,
         split='train',
-        num_stations=5
+        stations=[f'station_{i}' for i in range(5)]  # Use stations parameter
     )
     
     # Training setup
@@ -108,9 +108,12 @@ def example_3_training():
     model.train()
     print("\nTraining for 5 batches...")
     
-    for i, (x, y, adj) in enumerate(train_loader):
+    for i, batch in enumerate(train_loader):
         if i >= 5:  # Only 5 batches for demo
             break
+        
+        # Unpack batch
+        x, y, adj = batch
         
         # Move to device
         x = x.to(device)
@@ -120,10 +123,14 @@ def example_3_training():
         # Forward pass
         predictions = model(x, adj)
         
-        # Reshape if needed
+        # Reshape predictions and targets to match
         if len(predictions.shape) > 2:
-            predictions = predictions.squeeze(-1)
-        if len(y.shape) > 2:
+            predictions = predictions.squeeze(-1)  # [batch, stations]
+        
+        # Ensure y has the right shape [batch, stations]
+        if len(y.shape) == 3:
+            y = y.squeeze(1)  # Remove middle dimension if present
+        elif len(y.shape) > 2:
             y = y.squeeze(-1)
         
         # Compute loss
